@@ -37,10 +37,19 @@ jobs:
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes
           echo "after cleanup:"; df -h / | tail -1
 
+      # Manual run: use the given tag, else the pin in .fork-base.
+      # Scheduled run: always follow upstream's newest stable release, so a new
+      # Zed is picked up without touching this repo. If the patches no longer
+      # apply, `git am` fails loudly and that failure is the signal to fix them.
       - name: Resolve tag
         id: tag
         run: |
           TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            TAG=$(curl -fsSL https://api.github.com/repos/zed-industries/zed/releases \
+              | python3 -c "import json,sys; print(next(r['tag_name'] for r in json.load(sys.stdin) if not r['prerelease']))")
+            echo "latest upstream stable: $TAG"
+          fi
           [ -n "$TAG" ] || TAG=$(cat .fork-base)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "building $TAG"
