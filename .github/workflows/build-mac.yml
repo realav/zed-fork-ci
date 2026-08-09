@@ -1,0 +1,100 @@
+name: Build patched Zed (macOS arm64)
+
+# Clones upstream Zed at the pinned tag, applies patches/*.patch, builds a
+# macOS bundle, uploads it as an artifact. Nothing of Zed's history lives here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Zed tag to build (blank = use .fork-base)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC — Zed ships stable ~weekly
+
+jobs:
+  build:
+    runs-on: macos-15 # arm64, free and unlimited on public repos
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner ships ~14 GB free; spare Xcodes and simulator runtimes are
+      # the cheapest space to reclaim. Every step prints df so a disk failure
+      # tells us exactly where it happened instead of guessing.
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          ls -d /Applications/Xcode*.app || true
+          KEEP=$(xcode-select -p | sed 's|/Contents/Developer||')
+          echo "keeping $KEEP"
+          for app in /Applications/Xcode*.app; do
+            [ "$app" = "$KEEP" ] || sudo rm -rf "$app"
+          done
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Profiles/Runtimes
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes
+          echo "after cleanup:"; df -h / | tail -1
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          [ -n "$TAG" ] || TAG=$(cat .fork-base)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "building $TAG"
+
+      - name: Clone Zed at tag and apply patches
+        run: |
+          git clone --depth 1 --branch "${{ steps.tag.outputs.tag }}" \
+            https://github.com/zed-industries/zed.git zed
+          cd zed
+          git config user.email ci@example.com
+          git config user.name "fork ci"
+          git am ../patches/*.patch
+          git log --oneline -4
+          df -h / | tail -1
+
+      # Xcode 26 ships the metal compiler separately; gpui compiles shaders.
+      - name: Ensure Metal toolchain
+        run: |
+          xcrun metal --version 2>/dev/null || xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version 2>&1 | head -2
+          df -h / | tail -1
+
+      # webrtc-sys downloads this itself, but with no retry and a short timeout.
+      # Best effort: if the URL has moved, let the build try its own way.
+      - name: Prefetch WebRTC
+        continue-on-error: true
+        run: |
+          URL=https://github.com/zed-industries/livekit-rust-sdks/releases/download/webrtc-0001d84-4/webrtc-mac-arm64-release.zip
+          curl -fL --retry 5 --retry-all-errors --max-time 900 -o /tmp/webrtc.zip "$URL"
+          mkdir -p "$HOME/webrtc" && unzip -q /tmp/webrtc.zip -d "$HOME/webrtc"
+          rm -f /tmp/webrtc.zip
+          echo "LK_CUSTOM_WEBRTC=$HOME/webrtc/mac-arm64-release" >> "$GITHUB_ENV"
+          df -h / | tail -1
+
+      - name: Build bundle
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: false # the single biggest disk saving
+          CARGO_TERM_COLOR: never
+        run: |
+          cd zed
+          # -i installs into /Applications and skips DMG creation, which needs
+          # node tooling we don't want on the critical path.
+          script/bundle-mac -i || true
+          test -d /Applications/Zed.app || { echo "bundle did not install"; exit 1; }
+          echo "target size:"; du -sh target || true
+          df -h / | tail -1
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent /Applications/Zed.app "$RUNNER_TEMP/Zed-${{ steps.tag.outputs.tag }}.zip"
+          ls -lh "$RUNNER_TEMP"/Zed-*.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zed-${{ steps.tag.outputs.tag }}-patched-arm64
+          path: ${{ runner.temp }}/Zed-*.zip
+          retention-days: 30

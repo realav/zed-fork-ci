@@ -1,0 +1,189 @@
+From de1335003bf1e6ba0ad048d72cf1bbe4600e55fc Mon Sep 17 00:00:00 2001
+From: Aman <rockndrap@gmail.com>
+Date: Sun, 9 Aug 2026 14:20:41 +0530
+Subject: [PATCH 3/3] task: add show_status_icon to hide a task tab's status
+ icon
+
+A task tab shows a play/check/x icon reflecting the task's status, which
+is noise for long-lived interactive commands where the tab is just a
+terminal that happened to be spawned by a task. Add show_status_icon,
+defaulting to true; when disabled the icon is omitted entirely rather
+than replaced, so the tab is no wider than its title.
+---
+ crates/debugger_ui/src/session/running.rs |  1 +
+ crates/task/src/task.rs                   |  2 +
+ crates/task/src/task_template.rs          |  4 ++
+ crates/terminal_view/src/terminal_view.rs | 59 ++++++++++++++---------
+ crates/vim/src/command.rs                 |  1 +
+ docs/src/tasks.md                         |  2 +
+ 6 files changed, 45 insertions(+), 24 deletions(-)
+
+diff --git a/crates/debugger_ui/src/session/running.rs b/crates/debugger_ui/src/session/running.rs
+index 1226055eb3..dcefd1d79f 100644
+--- a/crates/debugger_ui/src/session/running.rs
++++ b/crates/debugger_ui/src/session/running.rs
+@@ -1362,6 +1362,7 @@ impl RunningState {
+             show_summary: false,
+             show_command: false,
+             show_rerun: false,
++            show_status_icon: true,
+             save: task::SaveStrategy::default(),
+         };
+ 
+diff --git a/crates/task/src/task.rs b/crates/task/src/task.rs
+index 37dc3d7556..e0f77a52e2 100644
+--- a/crates/task/src/task.rs
++++ b/crates/task/src/task.rs
+@@ -75,6 +75,8 @@ pub struct SpawnInTerminal {
+     pub show_command: bool,
+     /// Whether to show the rerun button in the terminal tab.
+     pub show_rerun: bool,
++    /// Whether to show the task's status icon in the terminal tab.
++    pub show_status_icon: bool,
+     /// Which edited buffers to save before running the task.
+     pub save: SaveStrategy,
+ }
+diff --git a/crates/task/src/task_template.rs b/crates/task/src/task_template.rs
+index 6404425bb3..92d90179ce 100644
+--- a/crates/task/src/task_template.rs
++++ b/crates/task/src/task_template.rs
+@@ -75,6 +75,9 @@ pub struct TaskTemplate {
+     /// Whether to show the rerun button in the task's terminal tab.
+     #[serde(default = "default_true")]
+     pub show_rerun: bool,
++    /// Whether to show the task's status icon in its terminal tab.
++    #[serde(default = "default_true")]
++    pub show_status_icon: bool,
+     /// Which edited buffers to save before running the task.
+     #[serde(default)]
+     pub save: SaveStrategy,
+@@ -301,6 +304,7 @@ impl TaskTemplate {
+                 show_summary: self.show_summary,
+                 show_command: self.show_command,
+                 show_rerun: self.show_rerun,
++                show_status_icon: self.show_status_icon,
+                 save: self.save,
+             },
+         })
+diff --git a/crates/terminal_view/src/terminal_view.rs b/crates/terminal_view/src/terminal_view.rs
+index cf7c3d1e76..a24f124016 100644
+--- a/crates/terminal_view/src/terminal_view.rs
++++ b/crates/terminal_view/src/terminal_view.rs
+@@ -1488,14 +1488,21 @@ impl Item for TerminalView {
+         let terminal = self.terminal().read(cx);
+ 
+         let (icon, icon_color, rerun_button) = match terminal.task() {
++            // No status icon requested: leave the slot out entirely rather than
++            // substituting another icon, so the tab is as narrow as the title.
++            Some(terminal_task) if !terminal_task.spawned_task.show_status_icon => (
++                None,
++                Color::Muted,
++                TerminalView::rerun_button(terminal_task),
++            ),
+             Some(terminal_task) => match &terminal_task.status {
+                 TaskStatus::Running => (
+-                    IconName::PlayFilled,
++                    Some(IconName::PlayFilled),
+                     Color::Disabled,
+                     TerminalView::rerun_button(terminal_task),
+                 ),
+                 TaskStatus::Unknown => (
+-                    IconName::Warning,
++                    Some(IconName::Warning),
+                     Color::Warning,
+                     TerminalView::rerun_button(terminal_task),
+                 ),
+@@ -1503,13 +1510,13 @@ impl Item for TerminalView {
+                     let rerun_button = TerminalView::rerun_button(terminal_task);
+ 
+                     if *success {
+-                        (IconName::Check, Color::Success, rerun_button)
++                        (Some(IconName::Check), Color::Success, rerun_button)
+                     } else {
+-                        (IconName::XCircle, Color::Error, rerun_button)
++                        (Some(IconName::XCircle), Color::Error, rerun_button)
+                     }
+                 }
+             },
+-            None => (IconName::Terminal, Color::Muted, None),
++            None => (Some(IconName::Terminal), Color::Muted, None),
+         };
+ 
+         let self_handle = self.self_handle.clone();
+@@ -1524,25 +1531,29 @@ impl Item for TerminalView {
+                     .update(cx, |this, cx| this.rename_terminal(action, window, cx))
+                     .ok();
+             })
+-            .child(
+-                h_flex()
+-                    .group("term-tab-icon")
+-                    .child(
+-                        div()
+-                            .when(rerun_button.is_some(), |this| {
+-                                this.hover(|style| style.invisible().w_0())
+-                            })
+-                            .child(Icon::new(icon).color(icon_color)),
+-                    )
+-                    .when_some(rerun_button, |this, rerun_button| {
+-                        this.child(
+-                            div()
+-                                .absolute()
+-                                .visible_on_hover("term-tab-icon")
+-                                .child(rerun_button),
+-                        )
+-                    }),
+-            )
++            .when(icon.is_some() || rerun_button.is_some(), |this| {
++                this.child(
++                    h_flex()
++                        .group("term-tab-icon")
++                        .when_some(icon, |this, icon| {
++                            this.child(
++                                div()
++                                    .when(rerun_button.is_some(), |this| {
++                                        this.hover(|style| style.invisible().w_0())
++                                    })
++                                    .child(Icon::new(icon).color(icon_color)),
++                            )
++                        })
++                        .when_some(rerun_button, |this, rerun_button| {
++                            this.child(
++                                div()
++                                    .absolute()
++                                    .visible_on_hover("term-tab-icon")
++                                    .child(rerun_button),
++                            )
++                        }),
++                )
++            })
+             .child(
+                 div()
+                     .relative()
+diff --git a/crates/vim/src/command.rs b/crates/vim/src/command.rs
+index 316128d9cb..0c0fc8779e 100644
+--- a/crates/vim/src/command.rs
++++ b/crates/vim/src/command.rs
+@@ -2488,6 +2488,7 @@ impl ShellExec {
+                     show_summary: false,
+                     show_command: false,
+                     show_rerun: false,
++                    show_status_icon: true,
+                     save: SaveStrategy::default(),
+                 };
+ 
+diff --git a/docs/src/tasks.md b/docs/src/tasks.md
+index 12a4491bed..37aa67e1ac 100644
+--- a/docs/src/tasks.md
++++ b/docs/src/tasks.md
+@@ -53,6 +53,8 @@ Zed supports ways to spawn (and rerun) commands using its integrated [terminal](
+     "show_command": true,
+     // Whether to show the rerun button in the task's terminal tab, defaults to `true`.
+     "show_rerun": true,
++    // Whether to show the task's status icon in its terminal tab, defaults to `true`.
++    "show_status_icon": true,
+     // Which edited buffers to save before running the task:
+     // * `all` — save all edited buffers
+     // * `current` — save currently active buffer only
+-- 
+2.50.1 (Apple Git-155)
+

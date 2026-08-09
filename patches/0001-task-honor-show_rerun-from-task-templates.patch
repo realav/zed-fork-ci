@@ -1,0 +1,53 @@
+From 8e8291707483679205b644847903d29c54520f0d Mon Sep 17 00:00:00 2001
+From: Aman <rockndrap@gmail.com>
+Date: Sun, 9 Aug 2026 13:30:33 +0530
+Subject: [PATCH 1/3] task: honor show_rerun from task templates
+
+The show_rerun flag was already plumbed through SpawnInTerminal and
+TaskState (#26122), but TaskTemplate::resolve hardcoded it to true, so
+tasks defined in tasks.json could not hide the rerun button. Expose it
+as a task template field, defaulting to true as before.
+---
+ crates/task/src/task_template.rs | 5 ++++-
+ docs/src/tasks.md                | 2 ++
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/crates/task/src/task_template.rs b/crates/task/src/task_template.rs
+index e6cc357bf6..6404425bb3 100644
+--- a/crates/task/src/task_template.rs
++++ b/crates/task/src/task_template.rs
+@@ -72,6 +72,9 @@ pub struct TaskTemplate {
+     /// Whether to show the command line in the task output.
+     #[serde(default = "default_true")]
+     pub show_command: bool,
++    /// Whether to show the rerun button in the task's terminal tab.
++    #[serde(default = "default_true")]
++    pub show_rerun: bool,
+     /// Which edited buffers to save before running the task.
+     #[serde(default)]
+     pub save: SaveStrategy,
+@@ -297,7 +300,7 @@ impl TaskTemplate {
+                 shell: self.shell.clone(),
+                 show_summary: self.show_summary,
+                 show_command: self.show_command,
+-                show_rerun: true,
++                show_rerun: self.show_rerun,
+                 save: self.save,
+             },
+         })
+diff --git a/docs/src/tasks.md b/docs/src/tasks.md
+index fa79967127..12a4491bed 100644
+--- a/docs/src/tasks.md
++++ b/docs/src/tasks.md
+@@ -51,6 +51,8 @@ Zed supports ways to spawn (and rerun) commands using its integrated [terminal](
+     "show_summary": true,
+     // Whether to show the command line in the output of the spawned task, defaults to `true`.
+     "show_command": true,
++    // Whether to show the rerun button in the task's terminal tab, defaults to `true`.
++    "show_rerun": true,
+     // Which edited buffers to save before running the task:
+     // * `all` — save all edited buffers
+     // * `current` — save currently active buffer only
+-- 
+2.50.1 (Apple Git-155)
+

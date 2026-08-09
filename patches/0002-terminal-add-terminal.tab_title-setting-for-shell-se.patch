@@ -1,0 +1,255 @@
+From 7e853211c2e5016ef0ed69a67cf6511ef3999e56 Mon Sep 17 00:00:00 2001
+From: Aman <rockndrap@gmail.com>
+Date: Sun, 9 Aug 2026 13:32:51 +0530
+Subject: [PATCH 2/3] terminal: add terminal.tab_title setting for shell-set
+ titles
+
+Task terminal tabs are titled after the task label, and other tabs after
+the running process, so long-lived TUIs that name themselves via OSC 2
+(agent CLIs, for example) are indistinguishable across tabs. Their title
+is already captured in Terminal::breadcrumb_text for the breadcrumb bar.
+
+Add terminal.tab_title, defaulting to the existing behavior, with a
+shell_title mode that prefers the shell-set title when there is one.
+Renamed tabs keep their custom title in both modes.
+---
+ assets/settings/default.json              |  7 ++++
+ crates/settings/src/vscode_import.rs      |  1 +
+ crates/settings_content/src/terminal.rs   | 29 ++++++++++++++
+ crates/terminal/src/terminal_settings.rs  |  4 +-
+ crates/terminal_view/src/terminal_view.rs | 47 ++++++++++++++++-------
+ docs/src/terminal.md                      | 18 +++++++++
+ 6 files changed, 91 insertions(+), 15 deletions(-)
+
+diff --git a/assets/settings/default.json b/assets/settings/default.json
+index 24cc904112..e7f8cd78f0 100644
+--- a/assets/settings/default.json
++++ b/assets/settings/default.json
+@@ -2087,6 +2087,13 @@
+     "show_count_badge": false,
+     // Whether to invoke the OS-specific alert sound when the terminal bell (BEL character) is printed.
+     "bell": "off",
++    // What to show as the terminal tab's title.
++    //  1. The task label for task tabs, otherwise the running process and its directory
++    //     "default"
++    //  2. The title the shell or program sets via an escape sequence (\e]2;Title\a),
++    //     falling back to "default" until one is set
++    //     "shell_title"
++    "tab_title": "default",
+   },
+   "code_actions_on_format": {},
+   // Settings related to running tasks.
+diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
+index 24072a291b..2ade1097a8 100644
+--- a/crates/settings/src/vscode_import.rs
++++ b/crates/settings/src/vscode_import.rs
+@@ -942,6 +942,7 @@ impl VsCodeSettings {
+             scroll_multiplier: None,
+             toolbar: None,
+             show_count_badge: None,
++            tab_title: None,
+             flexible: None,
+         })
+     }
+diff --git a/crates/settings_content/src/terminal.rs b/crates/settings_content/src/terminal.rs
+index e66795a193..eef6de9ce6 100644
+--- a/crates/settings_content/src/terminal.rs
++++ b/crates/settings_content/src/terminal.rs
+@@ -191,6 +191,35 @@ pub struct TerminalSettingsContent {
+     ///
+     /// Default: "system"
+     pub bell: Option<TerminalBell>,
++    /// What to show as the terminal tab's title.
++    ///
++    /// Default: "default"
++    pub tab_title: Option<TerminalTabTitle>,
++}
++
++/// What to show as the terminal tab's title.
++#[derive(
++    Copy,
++    Clone,
++    Debug,
++    Default,
++    PartialEq,
++    Eq,
++    Serialize,
++    Deserialize,
++    JsonSchema,
++    MergeFrom,
++    strum::VariantArray,
++    strum::VariantNames,
++)]
++#[serde(rename_all = "snake_case")]
++pub enum TerminalTabTitle {
++    /// The task's label for task tabs, otherwise the running process and its directory.
++    #[default]
++    Default,
++    /// The title set by the shell or program via an escape sequence (`\e]2;Title\a`),
++    /// falling back to `default` while no title has been set.
++    ShellTitle,
+ }
+ 
+ /// Shell configuration to open the terminal with.
+diff --git a/crates/terminal/src/terminal_settings.rs b/crates/terminal/src/terminal_settings.rs
+index 64d76b7de3..d33fb9b64e 100644
+--- a/crates/terminal/src/terminal_settings.rs
++++ b/crates/terminal/src/terminal_settings.rs
+@@ -7,7 +7,7 @@ pub use settings::AlternateScroll;
+ 
+ use settings::{
+     IntoGpui, PathHyperlinkRegex, RegisterSetting, ShowScrollbar, TerminalBell, TerminalBlink,
+-    TerminalDockPosition, TerminalLineHeight, VenvSettings, WorkingDirectory,
++    TerminalDockPosition, TerminalLineHeight, TerminalTabTitle, VenvSettings, WorkingDirectory,
+     merge_from::MergeFrom,
+ };
+ use task::Shell;
+@@ -51,6 +51,7 @@ pub struct TerminalSettings {
+     pub path_hyperlink_timeout_ms: u64,
+     pub show_count_badge: bool,
+     pub bell: TerminalBell,
++    pub tab_title: TerminalTabTitle,
+ }
+ 
+ #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+@@ -134,6 +135,7 @@ impl settings::Settings for TerminalSettings {
+             path_hyperlink_timeout_ms: project_content.path_hyperlink_timeout_ms.unwrap(),
+             show_count_badge: user_content.show_count_badge.unwrap(),
+             bell: user_content.bell.unwrap(),
++            tab_title: user_content.tab_title.unwrap(),
+         }
+     }
+ }
+diff --git a/crates/terminal_view/src/terminal_view.rs b/crates/terminal_view/src/terminal_view.rs
+index 3dad613417..cf7c3d1e76 100644
+--- a/crates/terminal_view/src/terminal_view.rs
++++ b/crates/terminal_view/src/terminal_view.rs
+@@ -20,7 +20,8 @@ use project::{Project, ProjectEntryId, search::SearchQuery};
+ use schemars::JsonSchema;
+ use serde::Deserialize;
+ use settings::{
+-    SeedQuerySetting, Settings, SettingsStore, TerminalBell, TerminalBlink, WorkingDirectory,
++    SeedQuerySetting, Settings, SettingsStore, TerminalBell, TerminalBlink, TerminalTabTitle,
++    WorkingDirectory,
+ };
+ use std::{
+     any::Any,
+@@ -47,7 +48,7 @@ use ui::{
+     prelude::*,
+     scrollbars::{self, ScrollbarVisibility},
+ };
+-use util::ResultExt;
++use util::{ResultExt, truncate_and_trailoff};
+ use workspace::{
+     CloseActiveItem, DraggedSelection, DraggedTab, NewCenterTerminal, NewTerminal, Pane,
+     ToolbarItemLocation, Workspace, WorkspaceId, delete_unloaded_items,
+@@ -77,6 +78,9 @@ fn viewport_line_for_point(point: Point, display_offset: usize) -> Option<usize>
+ 
+ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+ 
++/// Matches the truncation `Terminal::title` applies to its own titles.
++const MAX_TAB_TITLE_CHARS: usize = 25;
++
+ /// Event to transmit the scroll from the element to the view
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct ScrollTerminal(pub i32);
+@@ -1079,6 +1083,27 @@ impl TerminalView {
+         self.terminal = terminal;
+     }
+ 
++    /// The tab's title, honouring a custom (renamed) title first, then the
++    /// `terminal.tab_title` setting, then the terminal's own title.
++    fn tab_title(&self, truncate: bool, cx: &App) -> SharedString {
++        if let Some(custom_title) = self.custom_title.as_ref().filter(|t| !t.trim().is_empty()) {
++            return custom_title.clone().into();
++        }
++        let terminal = self.terminal().read(cx);
++        if TerminalSettings::get_global(cx).tab_title == TerminalTabTitle::ShellTitle {
++            let shell_title = terminal.breadcrumb_text.trim();
++            if !shell_title.is_empty() {
++                return if truncate {
++                    truncate_and_trailoff(shell_title, MAX_TAB_TITLE_CHARS)
++                } else {
++                    shell_title.to_string()
++                }
++                .into();
++            }
++        }
++        terminal.title(truncate).into()
++    }
++
+     fn rerun_button(task: &TaskState) -> Option<IconButton> {
+         if !task.spawned_task.show_rerun {
+             return None;
+@@ -1221,7 +1246,10 @@ fn subscribe_for_terminal_events(
+                         cx,
+                     ),
+                 },
+-                Event::BreadcrumbsChanged => cx.emit(ItemEvent::UpdateBreadcrumbs),
++                Event::BreadcrumbsChanged => {
++                    cx.emit(ItemEvent::UpdateBreadcrumbs);
++                    cx.emit(ItemEvent::UpdateTab);
++                }
+                 Event::CloseTerminal => cx.emit(ItemEvent::CloseItem),
+                 Event::SelectionsChanged => {
+                     window.invalidate_character_coordinates();
+@@ -1456,13 +1484,8 @@ impl Item for TerminalView {
+     }
+ 
+     fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
++        let title = self.tab_title(true, cx).to_string();
+         let terminal = self.terminal().read(cx);
+-        let title = self
+-            .custom_title
+-            .as_ref()
+-            .filter(|title| !title.trim().is_empty())
+-            .cloned()
+-            .unwrap_or_else(|| terminal.title(true));
+ 
+         let (icon, icon_color, rerun_button) = match terminal.task() {
+             Some(terminal_task) => match &terminal_task.status {
+@@ -1559,11 +1582,7 @@ impl Item for TerminalView {
+     }
+ 
+     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
+-        if let Some(custom_title) = self.custom_title.as_ref().filter(|l| !l.trim().is_empty()) {
+-            return custom_title.clone().into();
+-        }
+-        let terminal = self.terminal().read(cx);
+-        terminal.title(detail == 0).into()
++        self.tab_title(detail == 0, cx)
+     }
+ 
+     fn telemetry_event_text(&self) -> Option<&'static str> {
+diff --git a/docs/src/terminal.md b/docs/src/terminal.md
+index f1e82ca095..de8b908dde 100644
+--- a/docs/src/terminal.md
++++ b/docs/src/terminal.md
+@@ -345,6 +345,24 @@ Show the terminal title in a breadcrumb toolbar:
+ 
+ The title can be set by your shell using the escape sequence `\e]2;Title\007`.
+ 
++### Tab Title
++
++By default a terminal tab is titled after the task that spawned it, or after the running
++process and its directory. Set `tab_title` to `shell_title` to use the title the shell or
++program sets via the escape sequence above instead, which is useful for long-lived TUIs
++that name themselves:
++
++```json [settings]
++{
++  "terminal": {
++    "tab_title": "shell_title"
++  }
++}
++```
++
++Tabs fall back to the default title until a title has been set, and a tab renamed with
++{#action terminal::RenameTerminal} always keeps its custom name.
++
+ ## Integration with Tasks
+ 
+ The terminal integrates with Zed's [task system](./tasks.md). When you run a task, it executes in the terminal. Rerun the last task from a terminal with:
+-- 
+2.50.1 (Apple Git-155)
+
