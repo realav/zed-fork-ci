@@ -19,8 +19,9 @@ All three are written to be upstreamable (docs and defaults included).
 
 - **Actions → Build patched Zed → Run workflow**, optionally passing a tag.
 - Runs automatically Mondays 06:00 UTC (Zed ships stable ~weekly).
-- Install the artifact with `local/install-build.sh ~/Downloads/Zed-<tag>-...zip`
-  (quit Zed first). Do not just unzip and drag — see below.
+- Quit Zed, then run `local/install-build.sh` — it downloads the latest
+  successful run's artifact and installs it. Do not just unzip and drag, see
+  below for why.
 
 To follow a newer Zed: change `.fork-base`, or pass the tag as workflow input.
 If a patch stops applying, `git am` fails loudly — rebase locally and re-export.
@@ -36,13 +37,16 @@ Automation, mic and camera all ask again.
 The fix is a self-signed certificate that never changes:
 
 ```sh
-local/make-signing-cert.sh          # once per machine
-local/install-build.sh <artifact>   # after every build
+local/make-signing-cert.sh      # once per machine
+local/install-build.sh          # after every build
 ```
 
-`install-build.sh` clears the download quarantine, re-signs the helpers and the
-bundle (`--preserve-metadata=entitlements`, so JIT/mic/camera survive), verifies
-the result, then swaps it into `/Applications`. The recorded requirement becomes
+`install-build.sh` with no argument fetches the latest successful run's artifact
+via `gh`. It also takes a run id, a downloaded zip, or an existing `Zed.app` to
+re-sign in place. It clears the download quarantine, re-signs the helpers and
+the bundle (`--preserve-metadata=entitlements`, so JIT/mic/camera survive),
+verifies the result, then swaps it into `/Applications`, keeping the old app
+until the copy succeeds. The recorded requirement becomes
 
 ```
 identifier "dev.zed.Zed" and certificate leaf = H"<the cert>"
