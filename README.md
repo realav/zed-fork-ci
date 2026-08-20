@@ -19,10 +19,42 @@ All three are written to be upstreamable (docs and defaults included).
 
 - **Actions → Build patched Zed → Run workflow**, optionally passing a tag.
 - Runs automatically Mondays 06:00 UTC (Zed ships stable ~weekly).
-- Download the artifact, unzip, drag to `/Applications`.
+- Install the artifact with `local/install-build.sh ~/Downloads/Zed-<tag>-...zip`
+  (quit Zed first). Do not just unzip and drag — see below.
 
 To follow a newer Zed: change `.fork-base`, or pass the tag as workflow input.
 If a patch stops applying, `git am` fails loudly — rebase locally and re-export.
+
+## Keeping macOS permissions across builds
+
+The runner has no signing certificate, so `script/bundle-mac` signs the app
+ad-hoc. Ad-hoc means there is no identity, so macOS records every permission
+grant against the binary's **cdhash** — and a new build has a new cdhash. To
+TCC that is a different app, so Accessibility, Screen Recording, Files,
+Automation, mic and camera all ask again.
+
+The fix is a self-signed certificate that never changes:
+
+```sh
+local/make-signing-cert.sh          # once per machine
+local/install-build.sh <artifact>   # after every build
+```
+
+`install-build.sh` clears the download quarantine, re-signs the helpers and the
+bundle (`--preserve-metadata=entitlements`, so JIT/mic/camera survive), verifies
+the result, then swaps it into `/Applications`. The recorded requirement becomes
+
+```
+identifier "dev.zed.Zed" and certificate leaf = H"<the cert>"
+```
+
+which every later build satisfies. The certificate is self-signed and stays on
+this Mac; it cannot notarize, which does not matter for a locally built app.
+
+The very first install after switching still prompts once, because the identity
+genuinely changed. After that the grants stick. The same applies to local
+`fork.sh build` output — run `local/install-build.sh /Applications/Zed.app` to
+re-sign it in place.
 
 ## Why the odd steps
 
