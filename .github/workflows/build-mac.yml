@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The runner ships ~14 GB free; spare Xcodes and simulator runtimes are
       # the cheapest space to reclaim. Every step prints df so a disk failure
@@ -41,13 +41,18 @@ jobs:
       # Scheduled run: always follow upstream's newest stable release, so a new
       # Zed is picked up without touching this repo. If the patches no longer
       # apply, `git am` fails loudly and that failure is the signal to fix them.
+      # The API call is authenticated: anonymous requests share a per-IP limit
+      # with every other job on the runner's IP and fail with 403 intermittently.
+      # releases/latest already excludes drafts and prereleases.
       - name: Resolve tag
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            TAG=$(curl -fsSL https://api.github.com/repos/zed-industries/zed/releases \
-              | python3 -c "import json,sys; print(next(r['tag_name'] for r in json.load(sys.stdin) if not r['prerelease']))")
+            TAG=$(gh api repos/zed-industries/zed/releases/latest --jq .tag_name)
+            [ -n "$TAG" ] || { echo "could not resolve latest upstream tag"; exit 1; }
             echo "latest upstream stable: $TAG"
           fi
           [ -n "$TAG" ] || TAG=$(cat .fork-base)
