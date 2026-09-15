@@ -1,4 +1,4 @@
-From 8e8291707483679205b644847903d29c54520f0d Mon Sep 17 00:00:00 2001
+From 04c2049598579dc57f84468f5e0f1830f3cb1ddc Mon Sep 17 00:00:00 2001
 From: Aman <rockndrap@gmail.com>
 Date: Sun, 9 Aug 2026 13:30:33 +0530
 Subject: [PATCH 1/3] task: honor show_rerun from task templates
@@ -49,5 +49,5 @@ index fa79967127..12a4491bed 100644
      // * `all` — save all edited buffers
      // * `current` — save currently active buffer only
 -- 
-2.50.1 (Apple Git-155)
+2.54.0 (Apple Git-157)
 

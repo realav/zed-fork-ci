@@ -1,4 +1,4 @@
-From de1335003bf1e6ba0ad048d72cf1bbe4600e55fc Mon Sep 17 00:00:00 2001
+From 81e72deaefb16dbd43c8c5332c83d1ced1848ace Mon Sep 17 00:00:00 2001
 From: Aman <rockndrap@gmail.com>
 Date: Sun, 9 Aug 2026 14:20:41 +0530
 Subject: [PATCH 3/3] task: add show_status_icon to hide a task tab's status
@@ -19,7 +19,7 @@ than replaced, so the tab is no wider than its title.
  6 files changed, 45 insertions(+), 24 deletions(-)
 
 diff --git a/crates/debugger_ui/src/session/running.rs b/crates/debugger_ui/src/session/running.rs
-index 1226055eb3..dcefd1d79f 100644
+index 8f4301913d..980ad60ce7 100644
 --- a/crates/debugger_ui/src/session/running.rs
 +++ b/crates/debugger_ui/src/session/running.rs
 @@ -1362,6 +1362,7 @@ impl RunningState {
@@ -66,10 +66,10 @@ index 6404425bb3..92d90179ce 100644
              },
          })
 diff --git a/crates/terminal_view/src/terminal_view.rs b/crates/terminal_view/src/terminal_view.rs
-index cf7c3d1e76..a24f124016 100644
+index ed7ef4e8fb..db183d0f29 100644
 --- a/crates/terminal_view/src/terminal_view.rs
 +++ b/crates/terminal_view/src/terminal_view.rs
-@@ -1488,14 +1488,21 @@ impl Item for TerminalView {
+@@ -1501,14 +1501,21 @@ impl Item for TerminalView {
          let terminal = self.terminal().read(cx);
  
          let (icon, icon_color, rerun_button) = match terminal.task() {
@@ -93,7 +93,7 @@ index cf7c3d1e76..a24f124016 100644
                      Color::Warning,
                      TerminalView::rerun_button(terminal_task),
                  ),
-@@ -1503,13 +1510,13 @@ impl Item for TerminalView {
+@@ -1516,13 +1523,13 @@ impl Item for TerminalView {
                      let rerun_button = TerminalView::rerun_button(terminal_task);
  
                      if *success {
@@ -110,7 +110,7 @@ index cf7c3d1e76..a24f124016 100644
          };
  
          let self_handle = self.self_handle.clone();
-@@ -1524,25 +1531,29 @@ impl Item for TerminalView {
+@@ -1537,25 +1544,29 @@ impl Item for TerminalView {
                      .update(cx, |this, cx| this.rename_terminal(action, window, cx))
                      .ok();
              })
@@ -160,10 +160,10 @@ index cf7c3d1e76..a24f124016 100644
                  div()
                      .relative()
 diff --git a/crates/vim/src/command.rs b/crates/vim/src/command.rs
-index 316128d9cb..0c0fc8779e 100644
+index a80a6fd9f0..05c2c5deb7 100644
 --- a/crates/vim/src/command.rs
 +++ b/crates/vim/src/command.rs
-@@ -2488,6 +2488,7 @@ impl ShellExec {
+@@ -2480,6 +2480,7 @@ impl ShellExec {
                      show_summary: false,
                      show_command: false,
                      show_rerun: false,
@@ -185,5 +185,5 @@ index 12a4491bed..37aa67e1ac 100644
      // * `all` — save all edited buffers
      // * `current` — save currently active buffer only
 -- 
-2.50.1 (Apple Git-155)
+2.54.0 (Apple Git-157)
 

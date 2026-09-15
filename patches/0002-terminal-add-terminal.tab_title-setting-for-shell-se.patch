@@ -1,4 +1,4 @@
-From 7e853211c2e5016ef0ed69a67cf6511ef3999e56 Mon Sep 17 00:00:00 2001
+From d9726429cf0b1655e513a1530ed10ad714437934 Mon Sep 17 00:00:00 2001
 From: Aman <rockndrap@gmail.com>
 Date: Sun, 9 Aug 2026 13:32:51 +0530
 Subject: [PATCH 2/3] terminal: add terminal.tab_title setting for shell-set
@@ -15,17 +15,17 @@ Renamed tabs keep their custom title in both modes.
 ---
  assets/settings/default.json              |  7 ++++
  crates/settings/src/vscode_import.rs      |  1 +
- crates/settings_content/src/terminal.rs   | 29 ++++++++++++++
+ crates/settings_content/src/terminal.rs   | 31 ++++++++++++++-
  crates/terminal/src/terminal_settings.rs  |  4 +-
  crates/terminal_view/src/terminal_view.rs | 47 ++++++++++++++++-------
  docs/src/terminal.md                      | 18 +++++++++
- 6 files changed, 91 insertions(+), 15 deletions(-)
+ 6 files changed, 92 insertions(+), 16 deletions(-)
 
 diff --git a/assets/settings/default.json b/assets/settings/default.json
-index 24cc904112..e7f8cd78f0 100644
+index 671653708d..2241708a02 100644
 --- a/assets/settings/default.json
 +++ b/assets/settings/default.json
-@@ -2087,6 +2087,13 @@
+@@ -2170,6 +2170,13 @@
      "show_count_badge": false,
      // Whether to invoke the OS-specific alert sound when the terminal bell (BEL character) is printed.
      "bell": "off",
@@ -40,10 +40,10 @@ index 24cc904112..e7f8cd78f0 100644
    "code_actions_on_format": {},
    // Settings related to running tasks.
 diff --git a/crates/settings/src/vscode_import.rs b/crates/settings/src/vscode_import.rs
-index 24072a291b..2ade1097a8 100644
+index 3e25d4ecc6..d21af88581 100644
 --- a/crates/settings/src/vscode_import.rs
 +++ b/crates/settings/src/vscode_import.rs
-@@ -942,6 +942,7 @@ impl VsCodeSettings {
+@@ -953,6 +953,7 @@ impl VsCodeSettings {
              scroll_multiplier: None,
              toolbar: None,
              show_count_badge: None,
@@ -52,10 +52,10 @@ index 24072a291b..2ade1097a8 100644
          })
      }
 diff --git a/crates/settings_content/src/terminal.rs b/crates/settings_content/src/terminal.rs
-index e66795a193..eef6de9ce6 100644
+index 86b9557639..e8ecf658fc 100644
 --- a/crates/settings_content/src/terminal.rs
 +++ b/crates/settings_content/src/terminal.rs
-@@ -191,6 +191,35 @@ pub struct TerminalSettingsContent {
+@@ -193,6 +193,35 @@ pub struct TerminalSettingsContent {
      ///
      /// Default: "system"
      pub bell: Option<TerminalBell>,
@@ -90,9 +90,18 @@ index e66795a193..eef6de9ce6 100644
 +    ShellTitle,
  }
  
- /// Shell configuration to open the terminal with.
+ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
+@@ -202,7 +231,7 @@ crate::fallible_options::flattened_deserialize!(TerminalSettingsContent {
+         cursor_shape, blinking, alternate_scroll, option_as_meta, copy_on_select,
+         keep_selection_on_copy, open_links_in_mouse_mode, button, dock, starts_open, flexible,
+         default_width, default_height, max_scroll_history_lines, scroll_multiplier, toolbar,
+-        scrollbar, minimum_contrast, show_count_badge, bell,
++        scrollbar, minimum_contrast, show_count_badge, bell, tab_title,
+     },
+     defaults: {},
+ });
 diff --git a/crates/terminal/src/terminal_settings.rs b/crates/terminal/src/terminal_settings.rs
-index 64d76b7de3..d33fb9b64e 100644
+index e9ac01b71f..79360a7293 100644
 --- a/crates/terminal/src/terminal_settings.rs
 +++ b/crates/terminal/src/terminal_settings.rs
 @@ -7,7 +7,7 @@ pub use settings::AlternateScroll;
@@ -104,7 +113,7 @@ index 64d76b7de3..d33fb9b64e 100644
      merge_from::MergeFrom,
  };
  use task::Shell;
-@@ -51,6 +51,7 @@ pub struct TerminalSettings {
+@@ -52,6 +52,7 @@ pub struct TerminalSettings {
      pub path_hyperlink_timeout_ms: u64,
      pub show_count_badge: bool,
      pub bell: TerminalBell,
@@ -112,7 +121,7 @@ index 64d76b7de3..d33fb9b64e 100644
  }
  
  #[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-@@ -134,6 +135,7 @@ impl settings::Settings for TerminalSettings {
+@@ -136,6 +137,7 @@ impl settings::Settings for TerminalSettings {
              path_hyperlink_timeout_ms: project_content.path_hyperlink_timeout_ms.unwrap(),
              show_count_badge: user_content.show_count_badge.unwrap(),
              bell: user_content.bell.unwrap(),
@@ -121,7 +130,7 @@ index 64d76b7de3..d33fb9b64e 100644
      }
  }
 diff --git a/crates/terminal_view/src/terminal_view.rs b/crates/terminal_view/src/terminal_view.rs
-index 3dad613417..cf7c3d1e76 100644
+index 5f711f229c..ed7ef4e8fb 100644
 --- a/crates/terminal_view/src/terminal_view.rs
 +++ b/crates/terminal_view/src/terminal_view.rs
 @@ -20,7 +20,8 @@ use project::{Project, ProjectEntryId, search::SearchQuery};
@@ -153,7 +162,7 @@ index 3dad613417..cf7c3d1e76 100644
  /// Event to transmit the scroll from the element to the view
  #[derive(Clone, Debug, PartialEq)]
  pub struct ScrollTerminal(pub i32);
-@@ -1079,6 +1083,27 @@ impl TerminalView {
+@@ -1085,6 +1089,27 @@ impl TerminalView {
          self.terminal = terminal;
      }
  
@@ -181,7 +190,7 @@ index 3dad613417..cf7c3d1e76 100644
      fn rerun_button(task: &TaskState) -> Option<IconButton> {
          if !task.spawned_task.show_rerun {
              return None;
-@@ -1221,7 +1246,10 @@ fn subscribe_for_terminal_events(
+@@ -1227,7 +1252,10 @@ fn subscribe_for_terminal_events(
                          cx,
                      ),
                  },
@@ -193,7 +202,7 @@ index 3dad613417..cf7c3d1e76 100644
                  Event::CloseTerminal => cx.emit(ItemEvent::CloseItem),
                  Event::SelectionsChanged => {
                      window.invalidate_character_coordinates();
-@@ -1456,13 +1484,8 @@ impl Item for TerminalView {
+@@ -1469,13 +1497,8 @@ impl Item for TerminalView {
      }
  
      fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
@@ -208,7 +217,7 @@ index 3dad613417..cf7c3d1e76 100644
  
          let (icon, icon_color, rerun_button) = match terminal.task() {
              Some(terminal_task) => match &terminal_task.status {
-@@ -1559,11 +1582,7 @@ impl Item for TerminalView {
+@@ -1573,11 +1596,7 @@ impl Item for TerminalView {
      }
  
      fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString {
@@ -251,5 +260,5 @@ index f1e82ca095..de8b908dde 100644
  
  The terminal integrates with Zed's [task system](./tasks.md). When you run a task, it executes in the terminal. Rerun the last task from a terminal with:
 -- 
-2.50.1 (Apple Git-155)
+2.54.0 (Apple Git-157)
 
