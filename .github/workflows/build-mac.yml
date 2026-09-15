@@ -2,6 +2,8 @@ name: Build patched Zed (macOS arm64)
 
 # Clones upstream Zed at the pinned tag, applies patches/*.patch, builds a
 # macOS bundle, uploads it as an artifact. Nothing of Zed's history lives here.
+# If the build fails, the `fix` job lets Claude repair the patches, pushes the
+# repair and starts a new build (at most 3 attempts in a row).
 
 on:
   workflow_dispatch:
@@ -10,6 +12,10 @@ on:
         description: "Zed tag to build (blank = use .fork-base)"
         required: false
         default: ""
+      attempt:
+        description: "Automatic fix attempts so far (set by the fix job)"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC — Zed ships stable ~weekly
 
@@ -17,6 +23,8 @@ jobs:
   build:
     runs-on: macos-15 # arm64, free and unlimited on public repos
     timeout-minutes: 350
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v5
@@ -40,7 +48,7 @@ jobs:
       # Manual run: use the given tag, else the pin in .fork-base.
       # Scheduled run: always follow upstream's newest stable release, so a new
       # Zed is picked up without touching this repo. If the patches no longer
-      # apply, `git am` fails loudly and that failure is the signal to fix them.
+      # apply, `git am` fails loudly and the fix job takes over.
       # The API call is authenticated: anonymous requests share a per-IP limit
       # with every other job on the runner's IP and fail with 403 intermittently.
       # releases/latest already excludes drafts and prereleases.
@@ -112,3 +120,147 @@ jobs:
           name: Zed-${{ steps.tag.outputs.tag }}-patched-arm64
           path: ${{ runner.temp }}/Zed-*.zip
           retention-days: 30
+
+  # Build failed: Claude repairs the patches on a cheap Linux runner. Claude
+  # only edits files; the Verify step re-applies the exported patches onto a
+  # clean tag and type-checks every patched crate, and only then pushes to main
+  # and starts a new build. Skipped when no tag was resolved (nothing to
+  # repair) and after 3 attempts in a row, so an unfixable problem can't loop.
+  fix:
+    needs: build
+    if: failure() && needs.build.outputs.tag != '' && fromJSON(inputs.attempt || '0') < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write # push the repaired patches
+      actions: write # read the build log, start the follow-up build
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      ATTEMPT: ${{ inputs.attempt || '0' }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false # Claude's git commands can't push
+
+      # The full log is megabytes of cargo output; keep the errors and the tail.
+      - name: Collect build failure log
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .fix
+          JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
+            --jq '.jobs[] | select(.name == "build") | .id')
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > .fix/full.log
+          {
+            grep -nE 'error(\[E[0-9]+\])?:|patch does not apply|CONFLICT|##\[error\]' -A12 .fix/full.log | head -400
+            echo "----- last 150 lines -----"
+            tail -150 .fix/full.log
+          } > .fix/build-failure.log
+          wc -l .fix/build-failure.log
+
+      # Patches go back onto the tag they were exported from, then a plain
+      # rebase onto the new tag. Claude continues from whatever state it leaves.
+      - name: Prepare Zed checkout
+        id: prep
+        run: |
+          OLD=$(cat .fork-base)
+          echo "old=$OLD" >> "$GITHUB_OUTPUT"
+          git clone -q --filter=blob:none https://github.com/zed-industries/zed.git zed
+          cd zed
+          git config user.name "fork ci"
+          git config user.email ci@example.com
+          git checkout -q -B patches "$OLD"
+          git am -q ../patches/*.patch
+          if [ "$OLD" != "$TAG" ]; then
+            git rebase --onto "$TAG" "$OLD" patches || echo "rebase stopped on a conflict"
+          fi
+          git status --short | head -20
+
+      # Linux libraries for gpui, plus the exact toolchain Zed pins. The pin is
+      # read from the tag, and RUSTUP_TOOLCHAIN makes it apply outside ./zed too.
+      - name: Install build dependencies
+        run: |
+          CHANNEL=$(git -C zed show "$TAG:rust-toolchain.toml" | sed -n 's/^channel = "\(.*\)"/\1/p')
+          rustup toolchain install "$CHANNEL" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$CHANNEL" >> "$GITHUB_ENV"
+          (cd zed && git show "$TAG:script/linux" > /tmp/zed-linux-deps && bash /tmp/zed-linux-deps)
+          RUSTUP_TOOLCHAIN=$CHANNEL cargo fetch --manifest-path zed/Cargo.toml -q
+
+      - name: Repair patches with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          # cargo check of the terminal crates runs well past Bash's 2-minute default.
+          settings: '{"env": {"BASH_DEFAULT_TIMEOUT_MS": "2700000", "BASH_MAX_TIMEOUT_MS": "3600000"}}'
+          claude_args: |
+            --max-turns 80
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(cargo check:*),Bash(ls:*),Bash(grep:*)"
+          prompt: |
+            The CI build of patched Zed ${{ needs.build.outputs.tag }} failed. Make patches/*.patch
+            apply cleanly and compile on Zed ${{ needs.build.outputs.tag }}.
+
+            Context:
+            - README.md explains this repo: patches/*.patch are applied with `git am` onto
+              a Zed tag, then Zed is built on macOS.
+            - .fix/build-failure.log is the trimmed log of the failed build.
+            - ./zed is a Zed clone. Branch `patches` has the patch commits exported from
+              ${{ steps.prep.outputs.old }}; a rebase onto ${{ needs.build.outputs.tag }} was already
+              attempted. Run `git -C zed status` to see whether it stopped on a conflict.
+            - Linux build dependencies are installed.
+
+            Steps:
+            1. Read the log. If the failure is not caused by the patches (network, disk
+               space, runner, timeout, or an upstream problem in code the patches don't
+               touch), change nothing and stop, explaining why.
+            2. Finish the rebase onto ${{ needs.build.outputs.tag }}: resolve conflicts keeping both
+               upstream's new code and each patch's intent. Use `git -C zed ...` for git.
+            3. If the log shows a compile error, fix it inside the patch commit that
+               introduced the code: commit with `--fixup=<sha>`, then
+               `git -C zed -c sequence.editor=: rebase -i --autosquash ${{ needs.build.outputs.tag }}`.
+            4. Type-check every crate the patches touch, from the repo root:
+               `cargo check --manifest-path zed/Cargo.toml -p <package> -p <package> ...`
+               (package names come from each crates/<dir>/Cargo.toml). Fix until it passes.
+            5. Export: `git rm -q patches/*.patch`, then
+               `git -C zed format-patch -o ../patches ${{ needs.build.outputs.tag }}..patches`,
+               and write `${{ needs.build.outputs.tag }}` plus a newline to .fork-base.
+
+            Rules: keep the patches minimal and upstream-shaped (docs and defaults stay in
+            them), add nothing unrelated, don't commit or push in this repository.
+
+      # Trust nothing from the previous step: re-apply the exported patches onto a
+      # clean tag and type-check the patched crates before anything is pushed.
+      - name: Verify, push and rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add -A patches .fork-base
+          if git diff --cached --quiet; then
+            echo "::error::Claude made no changes (see its summary above); nothing pushed."
+            exit 1
+          fi
+          [ "$(tr -d '[:space:]' < .fork-base)" = "$TAG" ] || { echo "::error::.fork-base is not $TAG"; exit 1; }
+
+          cd zed
+          git am --abort 2>/dev/null || true
+          git rebase --abort 2>/dev/null || true
+          git checkout -q -f -B verify "$TAG"
+          git clean -fdq # ignored files such as target/ stay, so this check is incremental
+          git am -q "$GITHUB_WORKSPACE"/patches/*.patch
+          PKGS=""
+          for dir in $(grep -h '^diff --git a/crates/' "$GITHUB_WORKSPACE"/patches/*.patch | cut -d/ -f3 | sort -u); do
+            PKGS="$PKGS -p $(sed -n 's/^name = "\(.*\)"/\1/p' "crates/$dir/Cargo.toml" | head -1)"
+          done
+          echo "checking:$PKGS"
+          cargo check -q $PKGS
+          cd ..
+
+          NEXT=$((ATTEMPT + 1))
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "Auto-fix patches for Zed $TAG (attempt $NEXT)"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+          # Pushes made with GITHUB_TOKEN never trigger workflows; dispatch is the exception.
+          gh workflow run build-mac.yml --ref main -f tag="$TAG" -f attempt="$NEXT"
+          echo "pushed and started build $NEXT for $TAG"

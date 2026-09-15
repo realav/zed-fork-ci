@@ -24,7 +24,25 @@ All three are written to be upstreamable (docs and defaults included).
   below for why.
 
 To follow a newer Zed: change `.fork-base`, or pass the tag as workflow input.
-If a patch stops applying, `git am` fails loudly — rebase locally and re-export.
+
+## Automatic patch repair
+
+When a build fails, the `fix` job runs on a Linux runner:
+
+1. Collects the failed build's errors, applies the patches to the old tag and
+   rebases them onto the new one.
+2. Claude (`anthropics/claude-code-action`) resolves conflicts and compile
+   errors, then re-exports `patches/` and updates `.fork-base`. It cannot push.
+3. A script re-applies the exported patches onto a clean tag and runs
+   `cargo check` on every patched crate. Only if that passes does it push to
+   `main` and start a new build.
+
+It stops after 3 attempts in a row, and does nothing when the failure is not
+caused by the patches (network, disk, runner). A failed `fix` job means the
+problem needs a human.
+
+Needs the repo secret `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`,
+uses your Claude plan).
 
 ## Keeping macOS permissions across builds
 
